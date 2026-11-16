@@ -120,6 +120,67 @@ var ko = {
   fullIssue: "\uC804\uCCB4 \uB0B4\uC6A9\uACFC \uCCA8\uBD80 \uD30C\uC77C \uBCF4\uAE30"
 };
 
+var de = {
+  refresh: "Aktualisieren",
+  site: "Jira-Site",
+  scope: "Anzeigen",
+  assigned: "Mir zugewiesen",
+  reported: "Von mir erstellt",
+  all: "Alle Tickets",
+  done: "Erledigt",
+  search: "Geladene Tickets durchsuchen",
+  searchHint: "Schl\xFCssel oder Titel",
+  project: "Projekt",
+  issueType: "Vorgangstyp",
+  parent: "\xDCbergeordnetes Ticket",
+  children: "Untergeordnete Tickets",
+  childSearch: "Untergeordnete Tickets durchsuchen",
+  childStatus: "Status der untergeordneten Tickets",
+  childAssignee: "Bearbeiter der untergeordneten Tickets",
+  clearFilters: "Abfrage zur\xFCcksetzen",
+  runQuery: "Suchen",
+  childSearchHint: "Vollst\xE4ndiger Schl\xFCssel oder Titelw\xF6rter",
+  queryChanged: "Mit \u201ESuchen\u201C werden diese Bedingungen auf alle untergeordneten Tickets angewendet.",
+  queryApplied: "Mit diesen Bedingungen in Jira abgefragt.",
+  childOptionsLimited: "Einige Auswahlm\xF6glichkeiten konnten nicht ermittelt werden. Grenze die Abfrage mit Schl\xFCssel oder Titel ein.",
+  noMatchingChildren: "Keine untergeordneten Tickets passen zu dieser Abfrage.",
+  noChildren: "Keine untergeordneten Tickets",
+  loadingChildren: "Untergeordnete Tickets werden geladen\u2026",
+  childrenError: "Untergeordnete Tickets konnten nicht geladen werden",
+  childrenLimit: "Es werden bis zu 100 Treffer angezeigt. Grenze die Bedingungen ein, um weitere Treffer zu sehen.",
+  noParent: "Kein \xFCbergeordnetes Ticket",
+  status: "Status",
+  any: "Alle",
+  loading: "Jira-Tickets werden geladen\u2026",
+  noConnection: "Verbinde Jira in Orca",
+  connectHint: "F\xFCge dein Jira-Konto in Orca Tasks hinzu und aktualisiere dann dieses Panel.",
+  empty: "Keine passenden Tickets",
+  emptyHint: "Versuche einen anderen Filter oder aktualisiere die Liste.",
+  error: "Jira konnte nicht geladen werden",
+  detailError: "Ticketdetails konnten nicht geladen werden",
+  back: "Zur\xFCck",
+  toList: "Ticketliste",
+  assignee: "Bearbeiter",
+  reporter: "Melder",
+  unknownReporter: "Nicht verf\xFCgbar",
+  unassigned: "Nicht zugewiesen",
+  priority: "Priorit\xE4t",
+  updated: "Aktualisiert",
+  open: "In Jira \xF6ffnen",
+  noDescription: "Keine Beschreibung.",
+  truncated: "Die Beschreibung ist gek\xFCrzt. \xD6ffne Jira f\xFCr das vollst\xE4ndige Ticket.",
+  limit: "Bis zu 100 Tickets \xB7 Suche und Filter gelten f\xFCr diese Liste.",
+  issues: "Tickets",
+  retry: "Erneut versuchen",
+  loadingDetail: "Ticket wird geladen\u2026",
+  description: "Beschreibung",
+  enlargeImage: "Bild vergr\xF6\xDFern",
+  imageUnavailable: "Bild nicht verf\xFCgbar. \xD6ffne den Anhang in Jira.",
+  close: "Schlie\xDFen",
+  attachmentHint: "Bilder und Anh\xE4nge sind in Jira verf\xFCgbar.",
+  fullIssue: "Vollst\xE4ndiges Ticket und Anh\xE4nge anzeigen"
+};
+
 // plugins/jira-tasks/src/status-tone.ts
 function statusTone(status2) {
   const name = status2.trim().toUpperCase().replace(/[\s_-]+/g, " ");
@@ -141,6 +202,21 @@ function statusTone(status2) {
     COMPLETED: { hue: 150, chroma: 0.13 },
     \uC644\uB8CC: { hue: 150, chroma: 0.13 },
     RESOLVED: { hue: 175, chroma: 0.12 },
+    "IN ARBEIT": { hue: 255, chroma: 0.14 },
+    "IN BEARBEITUNG": { hue: 255, chroma: 0.14 },
+    "IM TEST": { hue: 300, chroma: 0.14 },
+    "IN PR\xDCFUNG": { hue: 205, chroma: 0.12 },
+    "IM REVIEW": { hue: 205, chroma: 0.12 },
+    WARTEND: { hue: 75, chroma: 0.13 },
+    "ZUR\xDCCKGESTELLT": { hue: 75, chroma: 0.13 },
+    BLOCKIERT: { hue: 25, chroma: 0.15 },
+    FERTIG: { hue: 150, chroma: 0.13 },
+    ERLEDIGT: { hue: 150, chroma: 0.13 },
+    ABGESCHLOSSEN: { hue: 150, chroma: 0.13 },
+    "ZU ERLEDIGEN": { hue: 260, chroma: 0.015 },
+    OFFEN: { hue: 260, chroma: 0.015 },
+    ABGEBROCHEN: { hue: 30, chroma: 0.055 },
+    STORNIERT: { hue: 30, chroma: 0.055 },
     BACKLOG: { hue: 225, chroma: 0.055 },
     "TO DO": { hue: 260, chroma: 0.015 },
     TODO: { hue: 260, chroma: 0.015 },
@@ -158,12 +234,12 @@ function statusTone(status2) {
 // plugins/jira-tasks/src/issue-type.ts
 function issueTypeTone(type) {
   const name = type.name.trim().toLowerCase();
-  if (/bug|버그|결함/.test(name)) return { hue: 25, symbol: "!" };
+  if (/bug|fehler|버그|결함/.test(name)) return { hue: 25, symbol: "!" };
   if (/epic|에픽/.test(name)) return { hue: 300, symbol: "\u25C6" };
-  if (/story|스토리/.test(name)) return { hue: 150, symbol: "\u25C7" };
-  if (type.subtask || /sub[ -]?task|하위\s*(작업|항목)/.test(name))
+  if (/story|geschichte|스토리/.test(name)) return { hue: 150, symbol: "\u25C7" };
+  if (type.subtask || /sub[ -]?task|unteraufgabe|teilaufgabe|하위\s*(작업|항목)/.test(name))
     return { hue: 205, symbol: "\u21B3" };
-  if (/task|작업/.test(name)) return { hue: 255, symbol: "\u2713" };
+  if (/task|aufgabe|작업/.test(name)) return { hue: 255, symbol: "\u2713" };
   let hash = 0;
   for (const character of name)
     hash = Math.imul(hash, 31) + character.codePointAt(0) | 0;
@@ -172,8 +248,8 @@ function issueTypeTone(type) {
 
 // plugins/jira-tasks/src/frame.ts
 var bridge = window.orca;
-var uiLocale = /^ko(?:-|$)/i.test(bridge.locale) ? "ko-KR" : "en-US";
-var t = uiLocale === "ko-KR" ? ko : en;
+var uiLocale = /^ko(?:-|$)/i.test(bridge.locale) ? "ko-KR" : /^de(?:-|$)/i.test(bridge.locale) ? "de-DE" : "en-US";
+var t = uiLocale === "ko-KR" ? ko : uiLocale === "de-DE" ? de : en;
 document.documentElement.lang = uiLocale;
 var app = document.querySelector("#app");
 var connection = { sites: [], selectedSiteId: null };
