@@ -38,6 +38,11 @@ var en = {
   childrenLimit: "Showing up to 100 matching issues. Narrow the conditions to see other matches.",
   noParent: "No parent issue",
   status: "Status",
+  changeStatus: "Change status",
+  loadingTransitions: "Loading statuses\u2026",
+  noTransitions: "No other statuses available.",
+  transitionsError: "Could not load statuses.",
+  transitionError: "Could not change the status. Open Jira if the transition needs more fields.",
   any: "All",
   loading: "Loading Jira tasks\u2026",
   noConnection: "Connect Jira in Orca",
@@ -107,6 +112,11 @@ var ko = {
   childrenLimit: "\uC870\uAC74\uC5D0 \uB9DE\uB294 \uACB0\uACFC\uB97C \uCD5C\uB300 100\uAC1C \uD45C\uC2DC\uD569\uB2C8\uB2E4. \uC870\uAC74\uC744 \uB354 \uC881\uD788\uBA74 \uB2E4\uB978 \uACB0\uACFC\uB3C4 \uC870\uD68C\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
   noParent: "\uC0C1\uC704 \uD56D\uBAA9 \uC5C6\uC74C",
   status: "\uC0C1\uD0DC",
+  changeStatus: "\uC0C1\uD0DC \uBCC0\uACBD",
+  loadingTransitions: "\uC0C1\uD0DC\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\u2026",
+  noTransitions: "\uBCC0\uACBD\uD560 \uC218 \uC788\uB294 \uC0C1\uD0DC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  transitionsError: "\uC0C1\uD0DC\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+  transitionError: "\uC0C1\uD0DC\uB97C \uBCC0\uACBD\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. Jira\uC5D0\uC11C \uD655\uC778\uD574 \uC8FC\uC138\uC694.",
   any: "\uC804\uCCB4",
   loading: "Jira \uC791\uC5C5\uC744 \uBD88\uB7EC\uC624\uB294 \uC911\u2026",
   noConnection: "Orca\uC5D0\uC11C Jira\uB97C \uC5F0\uACB0\uD574 \uC8FC\uC138\uC694",
@@ -177,6 +187,11 @@ var de = {
   childrenLimit: "Es werden bis zu 100 Treffer angezeigt. Grenze die Bedingungen ein, um weitere Treffer zu sehen.",
   noParent: "Kein \xFCbergeordnetes Ticket",
   status: "Status",
+  changeStatus: "Status \xE4ndern",
+  loadingTransitions: "Status werden geladen\u2026",
+  noTransitions: "Keine anderen Status verf\xFCgbar.",
+  transitionsError: "Status konnten nicht geladen werden.",
+  transitionError: "Status konnte nicht ge\xE4ndert werden. \xD6ffne Jira, falls der \xDCbergang weitere Felder erfordert.",
   any: "Alle",
   loading: "Jira-Tickets werden geladen\u2026",
   noConnection: "Verbinde Jira in Orca",
@@ -383,6 +398,167 @@ function statusBadge(task) {
   badge.style.setProperty("--status-hue", String(tone.hue));
   badge.style.setProperty("--status-chroma", String(tone.chroma));
   return badge;
+}
+var statusMenu = null;
+function closeStatusMenu(restoreFocus = false) {
+  if (!statusMenu) return;
+  const { menu, trigger, request } = statusMenu;
+  statusMenu = null;
+  request.abort();
+  menu.remove();
+  trigger.setAttribute("aria-expanded", "false");
+  if (restoreFocus && trigger.isConnected) trigger.focus({ preventScroll: true });
+}
+function applyTaskUpdate(updated) {
+  const merge = (task) => {
+    if (task?.key !== updated.key) return;
+    task.status = updated.status;
+    task.category = updated.category;
+    if (updated.updatedAt) task.updatedAt = updated.updatedAt;
+  };
+  page.tasks.forEach(merge);
+  children.tasks.forEach(merge);
+  globalSearch?.tasks?.forEach(merge);
+  for (const entry of navigationHistory) {
+    merge(entry.task);
+    entry.children?.tasks?.forEach(merge);
+  }
+  merge(selected);
+  for (const chip of document.querySelectorAll(".status-chip"))
+    if (chip.dataset.key === updated.key)
+      chip.replaceWith(statusChip({ key: updated.key, status: updated.status, category: updated.category }));
+}
+function positionStatusMenu(menu, trigger) {
+  const rect = trigger.getBoundingClientRect();
+  const margin = 8;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+  const below = rect.bottom + 4;
+  const top = below + height > window.innerHeight - margin && rect.top - height - 4 >= margin ? rect.top - height - 4 : below;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+function statusMenuItems(menu) {
+  return [...menu.querySelectorAll(".status-menu-item:not([disabled])")];
+}
+async function openStatusMenu(task, trigger) {
+  if (statusMenu?.trigger === trigger) {
+    closeStatusMenu(true);
+    return;
+  }
+  closeStatusMenu();
+  const request = new AbortController();
+  const menu = el("div", "", "status-menu");
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", `${t.changeStatus}: ${task.key}`);
+  menu.addEventListener("keydown", (event) => {
+    const items = statusMenuItems(menu);
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeStatusMenu(true);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!items.length) return;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      items[(index + step + items.length) % items.length].focus();
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      items[event.key === "Home" ? 0 : items.length - 1]?.focus();
+    } else if (event.key === "Tab") closeStatusMenu();
+  });
+  statusMenu = { menu, trigger, request };
+  trigger.setAttribute("aria-expanded", "true");
+  const show = (...nodes) => {
+    menu.replaceChildren(...nodes);
+    if (menu.isConnected) positionStatusMenu(menu, trigger);
+  };
+  show(el("p", t.loadingTransitions, "status-menu-note"));
+  document.body.append(menu);
+  positionStatusMenu(menu, trigger);
+  let transitions;
+  try {
+    transitions = await bridge.plugin.request(
+      "jira.transitions",
+      { siteId, key: task.key },
+      { signal: request.signal, timeoutMs: 3e4 }
+    );
+  } catch {
+    if (!request.signal.aborted) show(el("p", t.transitionsError, "status-menu-note error"));
+    return;
+  }
+  if (request.signal.aborted) return;
+  const order = { new: 0, indeterminate: 1, done: 2 };
+  const seen = /* @__PURE__ */ new Set();
+  const choices = transitions.filter((item) => item.status !== task.status && !seen.has(item.status) && seen.add(item.status)).sort((a, b) => (order[a.category] ?? 0) - (order[b.category] ?? 0));
+  if (!choices.length) {
+    show(el("p", t.noTransitions, "status-menu-note"));
+    return;
+  }
+  const note = el("p", "", "status-menu-note error");
+  note.hidden = true;
+  const items = choices.map((choice) => {
+    const item = button("", async () => {
+      for (const other of statusMenuItems(menu)) other.disabled = true;
+      item.setAttribute("aria-busy", "true");
+      note.hidden = true;
+      try {
+        const updated = await bridge.plugin.request(
+          "jira.transition",
+          { siteId, key: task.key, transitionId: choice.id },
+          { signal: request.signal, timeoutMs: 6e4 }
+        );
+        if (request.signal.aborted) return;
+        closeStatusMenu();
+        applyTaskUpdate(updated);
+        const chip = [...document.querySelectorAll(".status-chip")].find((node) => node.dataset.key === task.key);
+        chip?.focus({ preventScroll: true });
+      } catch {
+        if (request.signal.aborted) return;
+        item.removeAttribute("aria-busy");
+        for (const other of menu.querySelectorAll(".status-menu-item")) other.disabled = false;
+        note.hidden = false;
+        note.textContent = t.transitionError;
+        positionStatusMenu(menu, trigger);
+      }
+    }, "status-menu-item");
+    item.setAttribute("role", "menuitem");
+    if (choice.name && choice.name !== choice.status) item.title = choice.name;
+    item.append(statusBadge(choice));
+    return item;
+  });
+  show(...items, note);
+  items[0].focus({ preventScroll: true });
+}
+function statusChip(task) {
+  const chip = statusBadge(task);
+  if (!task.status || !task.key || !siteId) return chip;
+  chip.classList.add("status-chip");
+  chip.dataset.key = task.key;
+  chip.tabIndex = 0;
+  chip.setAttribute("role", "button");
+  chip.setAttribute("aria-haspopup", "menu");
+  chip.setAttribute("aria-expanded", "false");
+  chip.setAttribute("aria-label", `${t.changeStatus}: ${task.status}`);
+  chip.title = t.changeStatus;
+  chip.append(el("span", "⌄", "status-chip-caret"));
+  chip.lastChild.setAttribute("aria-hidden", "true");
+  const activate = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void openStatusMenu(task, chip);
+  };
+  chip.addEventListener("click", activate);
+  chip.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") activate(event);
+  });
+  chip.addEventListener("keyup", (event) => {
+    if (event.key === " ") event.preventDefault();
+  });
+  return chip;
 }
 var avatarRequests = /* @__PURE__ */ new Map();
 var observedAvatars = /* @__PURE__ */ new Set();
@@ -685,6 +861,7 @@ function sessionNotice() {
 function renderList(container) {
   container.replaceChildren();
   clearDetachedAvatars();
+  if (statusMenu && !statusMenu.trigger.isConnected) closeStatusMenu();
   if (globalSearch) {
     const heading = el("div", "", "global-search-heading");
     heading.append(
@@ -746,7 +923,7 @@ function taskList(tasks) {
     meta.append(
       el("span", task.key, "meta"),
       issueTypeBadge(task.issueType),
-      statusBadge(task),
+      statusChip(task),
       owner
     );
     row.append(el("span", task.title, "title"), meta);
@@ -771,6 +948,7 @@ function renderChildren(container) {
   if (!announcement.isConnected) container.append(announcement);
   announcement.textContent = childrenBusy ? t.loadingChildren : childrenError ? t.childrenError : `${children.tasks.length}${children.limitReached ? "+" : ""} ${t.issues}`;
   clearDetachedAvatars();
+  if (statusMenu && !statusMenu.trigger.isConnected) closeStatusMenu();
   const heading = el("div", "", "children-heading");
   heading.append(el("h2", t.children));
   if (!childrenBusy && !childrenError)
@@ -888,7 +1066,7 @@ function renderChildren(container) {
       meta.append(
         el("span", task.key, "parent-key"),
         issueTypeBadge(task.issueType),
-        statusBadge(task)
+        statusChip(task)
       );
       const owner = el("span", "", "child-assignee");
       owner.append(el("span", t.assignee, "muted"), assigneeView(task));
@@ -978,6 +1156,7 @@ async function loadChildren(key, signal, includeOptions = !childOptionsLoaded) {
 function render() {
   app.replaceChildren();
   clearDetachedAvatars();
+  if (statusMenu && !statusMenu.trigger.isConnected) closeStatusMenu();
   const bar = el("header", "", "topbar");
   if (selected) {
     const navigation = el("div", "", "detail-navigation");
@@ -1095,7 +1274,7 @@ function render() {
     meta.append(
       el("span", selected.key, "issue-key"),
       issueTypeBadge(selected.issueType),
-      statusBadge(selected)
+      statusChip(selected)
     );
     app.append(meta, el("h1", selected.title, "issue-title"));
     const properties = el("div", "", "properties");
@@ -1319,8 +1498,16 @@ for (const eventName of ["pointerdown", "focusin"])
     )) {
       if (!picker.contains(event.target)) picker.open = false;
     }
+    if (statusMenu && !statusMenu.menu.contains(event.target) && !statusMenu.trigger.contains(event.target))
+      closeStatusMenu();
   });
+window.addEventListener("resize", () => closeStatusMenu());
+document.addEventListener("scroll", (event) => {
+  if (statusMenu && !(event.target instanceof Node && statusMenu.menu.contains(event.target)))
+    closeStatusMenu();
+}, true);
 window.addEventListener("pagehide", () => {
+  closeStatusMenu();
   pending?.abort();
   globalPending?.abort();
 });

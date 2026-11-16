@@ -437,6 +437,41 @@ function createJiraClient(run = runCli, optionsBudgetMs = 15e3) {
       }
       return result;
     },
+    async transitions(input, signal) {
+      siteId(input?.siteId);
+      if (typeof input.key !== "string" || !KEY.test(input.key) || input.key.length > 100)
+        throw new Error("Invalid Jira issue key.");
+      const rows = await run(
+        ["status", "list", input.key, "--site", input.siteId],
+        signal
+      );
+      if (!Array.isArray(rows)) throw new Error("Invalid Jira transition list.");
+      return rows.slice(0, 100).map((value) => {
+        const row = optional(value);
+        const to = optional(row.to);
+        return {
+          id: text(row.id, 50),
+          name: text(row.name, 200),
+          status: text(to.name, 100),
+          category: text(to.categoryKey, 100)
+        };
+      }).filter((row) => /^\d{1,20}$/.test(row.id) && row.status);
+    },
+    async transition(input, signal) {
+      siteId(input?.siteId);
+      if (typeof input.key !== "string" || !KEY.test(input.key) || input.key.length > 100)
+        throw new Error("Invalid Jira issue key.");
+      if (typeof input.transitionId !== "string" || !/^\d{1,20}$/.test(input.transitionId))
+        throw new Error("Invalid Jira transition.");
+      await run(
+        ["status", "set", input.key, "--to-id", input.transitionId, "--site", input.siteId],
+        signal
+      );
+      return normalizeTask(
+        await run(["issue", input.key, "--site", input.siteId], signal),
+        true
+      );
+    },
     async issue(input, signal) {
       siteId(input?.siteId);
       if (typeof input.key !== "string" || !/^[A-Z][A-Z0-9_]*-\d+$/.test(input.key) || input.key.length > 100)
@@ -699,6 +734,14 @@ function activate(orca) {
   orca.panels.handle(
     "jira.children",
     (input, { signal }) => jira.children(input, signal)
+  );
+  orca.panels.handle(
+    "jira.transitions",
+    (input, { signal }) => jira.transitions(input, signal)
+  );
+  orca.panels.handle(
+    "jira.transition",
+    (input, { signal }) => jira.transition(input, signal)
   );
   orca.panels.handle(
     "jira.issue",
