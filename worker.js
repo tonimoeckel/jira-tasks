@@ -507,6 +507,8 @@ async function readTranscript(file) {
 }
 function conversationTexts(transcript) {
   const texts = [];
+  texts.title = "";
+  let customTitle = "";
   for (const line of transcript.split("\n")) {
     if (!line.trim()) continue;
     let row;
@@ -515,6 +517,10 @@ function conversationTexts(transcript) {
     } catch {
       continue;
     }
+    if (row?.type === "custom-title" && typeof row.customTitle === "string")
+      customTitle = row.customTitle;
+    else if (row?.type === "ai-title" && typeof row.aiTitle === "string")
+      texts.title = row.aiTitle;
     if (row?.type !== "user" && row?.type !== "assistant" || row.isSidechain || row.isMeta)
       continue;
     const content = row.message?.content;
@@ -522,6 +528,7 @@ function conversationTexts(transcript) {
     for (const part of parts)
       texts.push(part.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, " "));
   }
+  if (customTitle) texts.title = customTitle;
   return texts;
 }
 function issueKeys(texts) {
@@ -597,7 +604,7 @@ async function sessionKeys(host) {
     }
     if (!texts.length || isNamingTask(texts)) continue;
     const keys = issueKeys(texts);
-    const title = titles.get(candidate.id) || [...titles.values()].find(Boolean) || "";
+    const title = titles.get(candidate.id) || texts.title || "";
     return { status: keys.length ? "ok" : "no-keys", keys, title: title.slice(0, 200) };
   }
   return { status: "no-chat", keys: [] };

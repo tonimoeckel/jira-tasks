@@ -46,7 +46,7 @@ Open **Jira Tasks** from the right activity bar. A single connected Jira site is
 
 ### Session issues
 
-**Session** lists the Jira issues discussed in the chat of the focused workspace. The worker reads the focused workspace (`workspace.readContext`) and its agents (`agents.list`), opens that workspace's newest Claude Code transcript on this machine (read-only, under `~/.claude/projects` or Orca's Claude profiles), and collects issue keys from user and assistant messages; tool output is ignored. Only keys Jira resolves are shown, most recently mentioned first, up to 100. The list refreshes when you switch workspaces or an agent finishes a turn. Transcript text never leaves the machine; only the extracted keys are sent to Jira as a `key IN (…)` query.
+**Session** lists the Jira issues discussed in the chat of the focused workspace. The worker reads the focused workspace (`workspace.readContext`) and its agents (`agents.list`), opens the transcript of the chat Orca reports for that workspace (falling back to its newest Claude Code transcript) on this machine (read-only, under `~/.claude/projects` or Orca's Claude profiles), and collects issue keys from user and assistant messages; tool output is ignored. Only keys Jira resolves are shown, most recently mentioned first, up to 100. The list refreshes when you switch workspaces or an agent finishes a turn. Transcript text never leaves the machine; only the extracted keys are sent to Jira as a `key IN (…)` query.
 
 When a search in the list finds nothing, **Search all issues** runs the same key or title words against all of Jira, regardless of the selected scope. **Back to filtered list** returns to the scope.
 
