@@ -6,7 +6,16 @@ var en = {
   assigned: "Assigned to me",
   reported: "Reported by me",
   all: "All issues",
-  done: "Completed",
+  session: "Session",
+  sessionChat: "Chat",
+  sessionNoWorkspace: "Open a workspace to see the issues discussed in its chat.",
+  sessionNoChat: "No chat found in this workspace.",
+  sessionNoKeys: "No Jira issues mentioned in this chat yet.",
+  searchAll: "Search all issues",
+  searchAllResults: "Results across all issues",
+  searchingAll: "Searching all issues\u2026",
+  searchAllError: "Could not search Jira",
+  backToFiltered: "Back to filtered list",
   search: "Search loaded issues",
   searchHint: "Key or title",
   project: "Project",
@@ -66,7 +75,16 @@ var ko = {
   assigned: "\uB0B4 \uB2F4\uB2F9",
   reported: "\uB0B4\uAC00 \uB4F1\uB85D",
   all: "\uC804\uCCB4 \uD2F0\uCF13",
-  done: "\uC644\uB8CC",
+  session: "\uC138\uC158",
+  sessionChat: "\uCC44\uD305",
+  sessionNoWorkspace: "\uC791\uC5C5 \uACF5\uAC04\uC744 \uC5F4\uBA74 \uCC44\uD305\uC5D0\uC11C \uB2E4\uB8EC \uD2F0\uCF13\uC744 \uD45C\uC2DC\uD569\uB2C8\uB2E4.",
+  sessionNoChat: "\uC774 \uC791\uC5C5 \uACF5\uAC04\uC5D0\uC11C \uCC44\uD305\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",
+  sessionNoKeys: "\uC774 \uCC44\uD305\uC5D0\uC11C \uC5B8\uAE09\uD55C Jira \uD2F0\uCF13\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  searchAll: "\uC804\uCCB4 \uD2F0\uCF13\uC5D0\uC11C \uAC80\uC0C9",
+  searchAllResults: "\uC804\uCCB4 \uD2F0\uCF13 \uAC80\uC0C9 \uACB0\uACFC",
+  searchingAll: "\uC804\uCCB4 \uD2F0\uCF13\uC744 \uAC80\uC0C9\uD558\uB294 \uC911\u2026",
+  searchAllError: "Jira\uB97C \uAC80\uC0C9\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",
+  backToFiltered: "\uD544\uD130 \uBAA9\uB85D\uC73C\uB85C",
   search: "\uBD88\uB7EC\uC628 \uD2F0\uCF13 \uAC80\uC0C9",
   searchHint: "\uD2F0\uCF13 \uBC88\uD638 \uB610\uB294 \uC81C\uBAA9",
   project: "\uD504\uB85C\uC81D\uD2B8",
@@ -127,7 +145,16 @@ var de = {
   assigned: "Mir zugewiesen",
   reported: "Von mir erstellt",
   all: "Alle Tickets",
-  done: "Erledigt",
+  session: "Session",
+  sessionChat: "Chat",
+  sessionNoWorkspace: "\xD6ffne einen Workspace, um die Tickets aus seinem Chat zu sehen.",
+  sessionNoChat: "In diesem Workspace wurde kein Chat gefunden.",
+  sessionNoKeys: "In diesem Chat wurden noch keine Jira-Tickets erw\xE4hnt.",
+  searchAll: "In allen Tickets suchen",
+  searchAllResults: "Treffer in allen Tickets",
+  searchingAll: "Alle Tickets werden durchsucht\u2026",
+  searchAllError: "Jira konnte nicht durchsucht werden",
+  backToFiltered: "Zur\xFCck zur gefilterten Liste",
   search: "Geladene Tickets durchsuchen",
   searchHint: "Schl\xFCssel oder Titel",
   project: "Projekt",
@@ -254,7 +281,9 @@ document.documentElement.lang = uiLocale;
 var app = document.querySelector("#app");
 var connection = { sites: [], selectedSiteId: null };
 var siteId = "";
-var filter = "assigned";
+var filter = "session";
+var globalSearch = null;
+var globalPending;
 var page = { tasks: [], limitReached: false };
 var selected = null;
 var busy = true;
@@ -618,20 +647,94 @@ function selectField(label, value, options, action) {
   field.append(control);
   return field;
 }
+function clearGlobalSearch() {
+  globalPending?.abort();
+  globalPending = void 0;
+  globalSearch = null;
+}
+async function searchAll(container) {
+  const term = query.trim();
+  if (!term || !siteId) return;
+  globalPending?.abort();
+  const request = new AbortController();
+  globalPending = request;
+  globalSearch = { query: term, busy: true, error: "", tasks: [], limitReached: false };
+  renderList(container);
+  try {
+    const result = await bridge.plugin.request(
+      "jira.searchAll",
+      { siteId, search: term },
+      { signal: request.signal }
+    );
+    if (request.signal.aborted || globalSearch?.query !== term) return;
+    globalSearch = { query: term, busy: false, error: "", ...result };
+  } catch {
+    if (request.signal.aborted || globalSearch?.query !== term) return;
+    globalSearch = { query: term, busy: false, error: t.searchAllError, tasks: [], limitReached: false };
+  }
+  if (container.isConnected) renderList(container);
+}
+function sessionNotice() {
+  const info = page.session;
+  if (filter !== "session" || !info) return null;
+  if (info.status === "no-workspace") return t.sessionNoWorkspace;
+  if (info.status === "no-chat") return t.sessionNoChat;
+  if (info.status === "no-keys" || !page.tasks.length) return t.sessionNoKeys;
+  return null;
+}
 function renderList(container) {
   container.replaceChildren();
   clearDetachedAvatars();
+  if (globalSearch) {
+    const heading = el("div", "", "global-search-heading");
+    heading.append(
+      el("span", `${t.searchAllResults} \xB7 \u201E${globalSearch.query}\u201C`, "muted"),
+      button(t.backToFiltered, () => {
+        clearGlobalSearch();
+        renderList(container);
+      }, "ghost")
+    );
+    container.append(heading);
+    if (globalSearch.busy) {
+      container.append(el("p", t.searchingAll, "muted"));
+      return;
+    }
+    if (globalSearch.error) {
+      container.append(
+        el("p", globalSearch.error, "error"),
+        button(t.retry, () => searchAll(container))
+      );
+      return;
+    }
+    container.append(el("div", `${globalSearch.tasks.length}${globalSearch.limitReached ? "+" : ""} ${t.issues}`, "muted"));
+    if (globalSearch.limitReached) container.append(el("p", t.childrenLimit, "muted"));
+    if (!globalSearch.tasks.length) {
+      container.append(el("p", t.empty, "empty"));
+      return;
+    }
+    container.append(taskList(globalSearch.tasks));
+    return;
+  }
   const tasks = page.tasks.filter(
     (task) => (!project || task.project === project) && (!status || task.status === status) && `${task.key} ${task.title}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
   );
-  container.append(
-    el("div", `${tasks.length} / ${page.tasks.length} ${t.issues}`, "muted")
-  );
+  const counter = el("div", `${tasks.length} / ${page.tasks.length} ${t.issues}`, "muted");
+  if (filter === "session" && page.session?.title)
+    counter.textContent += ` \xB7 ${t.sessionChat}: ${page.session.title}`;
+  container.append(counter);
   if (page.limitReached) container.append(el("p", t.limit, "muted"));
   if (!tasks.length) {
-    container.append(el("p", t.empty, "empty"));
+    const notice = !query.trim() && sessionNotice();
+    container.append(el("p", notice || t.empty, "empty"));
+    if (query.trim()) {
+      const expand = button(t.searchAll, () => searchAll(container), "search-all-button");
+      container.append(expand);
+    }
     return;
   }
+  container.append(taskList(tasks));
+}
+function taskList(tasks) {
   const list = el("div", "", "task-list");
   list.setAttribute("role", "list");
   for (const task of tasks) {
@@ -649,7 +752,7 @@ function renderList(container) {
     row.append(el("span", task.title, "title"), meta);
     list.append(row);
   }
-  container.append(list);
+  return list;
 }
 function childCriteria() {
   return {
@@ -922,6 +1025,7 @@ function render() {
           (value) => {
             siteId = value;
             query = project = status = "";
+            clearGlobalSearch();
             void load();
           }
         )
@@ -930,15 +1034,16 @@ function render() {
     scopes.setAttribute("role", "group");
     scopes.setAttribute("aria-label", t.scope);
     for (const value of [
+      "session",
       "assigned",
       "reported",
-      "all",
-      "done"
+      "all"
     ]) {
       const scope = button(
         t[value],
         () => {
           filter = value;
+          clearGlobalSearch();
           void load();
         },
         "scope-option"
@@ -1062,6 +1167,7 @@ function render() {
     const results = el("div");
     input.addEventListener("input", () => {
       query = input.value;
+      if (globalSearch && globalSearch.query !== query.trim()) clearGlobalSearch();
       renderList(results);
     });
     const choices = (values, label) => [
@@ -1214,5 +1320,45 @@ for (const eventName of ["pointerdown", "focusin"])
       if (!picker.contains(event.target)) picker.open = false;
     }
   });
-window.addEventListener("pagehide", () => pending?.abort());
+window.addEventListener("pagehide", () => {
+  pending?.abort();
+  globalPending?.abort();
+});
+var sessionWorkspace;
+var sessionReload;
+function refreshSession() {
+  clearTimeout(sessionReload);
+  sessionReload = setTimeout(async () => {
+    if (filter !== "session" || selected || busy || !siteId) return;
+    const version = navigationVersion;
+    try {
+      const nextPage = await bridge.plugin.request("jira.list", { siteId, filter });
+      if (version !== navigationVersion || filter !== "session" || selected || busy) return;
+      page = nextPage;
+      if (globalSearch || document.activeElement?.matches?.("input, select")) return;
+      const scrollY = window.scrollY;
+      render();
+      window.scrollTo(0, scrollY);
+    } catch {
+    }
+  }, 600);
+}
+try {
+  bridge.on("workspace.changed", (payload) => {
+    const id = payload?.context?.workspaceId ?? null;
+    if (sessionWorkspace === void 0) {
+      sessionWorkspace = id;
+      return;
+    }
+    if (id === sessionWorkspace) return;
+    sessionWorkspace = id;
+    refreshSession();
+  });
+  bridge.on("agent.status.changed", (payload) => {
+    if (payload?.state !== "done" && payload?.state !== "waiting") return;
+    if (sessionWorkspace && payload.workspaceId && payload.workspaceId !== sessionWorkspace) return;
+    refreshSession();
+  });
+} catch {
+}
 void load(true);
