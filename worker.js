@@ -1,6 +1,11 @@
 // plugins/jira-tasks/src/open-panel.ts
 import { execFile as execFile2 } from "node:child_process";
 
+// plugins/jira-tasks/src/session.ts
+import { open as openFile, readdir, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+
 // plugins/jira-tasks/src/jira.ts
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -176,7 +181,8 @@ function extractDescription(value) {
 
 // plugins/jira-tasks/src/jira.ts
 var LIMIT = 100;
-var FILTERS = /* @__PURE__ */ new Set(["assigned", "reported", "all", "done"]);
+var FILTERS = /* @__PURE__ */ new Set(["assigned", "reported", "all"]);
+var KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
 function record(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Invalid Jira response.");
@@ -318,6 +324,51 @@ function createJiraClient(run = runCli, optionsBudgetMs = 15e3) {
         limitReached: rows.length >= LIMIT
       };
     },
+    async byKeys(input, signal) {
+      siteId(input?.siteId);
+      if (!Array.isArray(input.keys) || input.keys.length > LIMIT || input.keys.some((key) => typeof key !== "string" || !KEY.test(key) || key.length > 100))
+        throw new Error("Invalid Jira issue keys.");
+      if (!input.keys.length) return { tasks: [], limitReached: false };
+      const rows = await run(
+        [
+          "search",
+          `key IN (${input.keys.map(quoteJql).join(", ")})`,
+          "--site",
+          input.siteId,
+          "--limit",
+          String(LIMIT)
+        ],
+        signal
+      );
+      if (!Array.isArray(rows)) throw new Error("Invalid Jira task list.");
+      const order = new Map(input.keys.map((key, index) => [key, index]));
+      const tasks = rows.slice(0, LIMIT).map((row) => normalizeTask(row)).sort((a, b) => (order.get(a.key) ?? LIMIT) - (order.get(b.key) ?? LIMIT));
+      return { tasks, limitReached: false };
+    },
+    async searchAll(input, signal) {
+      siteId(input?.siteId);
+      const search = input.search;
+      if (typeof search !== "string" || !search.trim() || search.length > 200 || /[\x00-\x1f]/.test(search))
+        throw new Error("Invalid Jira search.");
+      const term = search.trim();
+      let jql;
+      if (/^[a-z][a-z0-9_]*-\d+$/i.test(term))
+        jql = `key = ${quoteJql(term.toUpperCase())}`;
+      else {
+        const words = term.replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!words) throw new Error("Enter an issue key or title words.");
+        jql = `summary ~ ${quoteJql(words + (/^[\p{L}\p{N}']+$/u.test(words.split(" ").at(-1)) ? "*" : ""))} ORDER BY updated DESC`;
+      }
+      const rows = await run(
+        ["search", jql, "--site", input.siteId, "--limit", String(LIMIT)],
+        signal
+      );
+      if (!Array.isArray(rows)) throw new Error("Invalid Jira task list.");
+      return {
+        tasks: rows.slice(0, LIMIT).map((row) => normalizeTask(row)),
+        limitReached: rows.length >= LIMIT
+      };
+    },
     async children(input, signal) {
       siteId(input?.siteId);
       if (typeof input.key !== "string" || !/^[A-Z][A-Z0-9_]*-\d+$/.test(input.key) || input.key.length > 100)
@@ -398,6 +449,167 @@ function createJiraClient(run = runCli, optionsBudgetMs = 15e3) {
   };
 }
 
+// plugins/jira-tasks/src/session.ts
+var MAX_SESSION_KEYS = 100;
+var MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
+var MENTION = /(?<![A-Za-z0-9_.-])([A-Za-z][A-Za-z0-9_]{1,19})-([1-9]\d{0,7})(?![A-Za-z0-9_])/g;
+function transcriptDirName(path) {
+  return path.replace(/[^A-Za-z0-9]/g, "-");
+}
+function orcaDataDirs() {
+  const home = homedir();
+  const dirs = [];
+  if (process.env.ORCA_USER_DATA_PATH) dirs.push(process.env.ORCA_USER_DATA_PATH);
+  if (process.platform === "darwin")
+    dirs.push(join(home, "Library", "Application Support", "orca"));
+  else if (process.platform === "win32" && process.env.APPDATA)
+    dirs.push(join(process.env.APPDATA, "orca"));
+  else dirs.push(join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "orca"));
+  return dirs;
+}
+async function claudeProjectRoots() {
+  const roots = [join(homedir(), ".claude")];
+  if (process.env.CLAUDE_CONFIG_DIR) roots.push(process.env.CLAUDE_CONFIG_DIR);
+  for (const dir of orcaDataDirs()) {
+    try {
+      for (const profile of await readdir(join(dir, "claude-profiles"), { withFileTypes: true }))
+        if (profile.isDirectory())
+          roots.push(join(dir, "claude-profiles", profile.name, "home"));
+    } catch {
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const root of roots) {
+    try {
+      const real = await realpath(join(root, "projects"));
+      if (!seen.has(real)) {
+        seen.add(real);
+        result.push(real);
+      }
+    } catch {
+    }
+  }
+  return result;
+}
+async function readTranscript(file) {
+  const handle = await openFile(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, MAX_TRANSCRIPT_BYTES);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    const text2 = buffer.toString("utf8");
+    return size > length ? text2.slice(text2.indexOf("\n") + 1) : text2;
+  } finally {
+    await handle.close();
+  }
+}
+function conversationTexts(transcript) {
+  const texts = [];
+  texts.title = "";
+  let customTitle = "";
+  for (const line of transcript.split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (row?.type === "custom-title" && typeof row.customTitle === "string")
+      customTitle = row.customTitle;
+    else if (row?.type === "ai-title" && typeof row.aiTitle === "string")
+      texts.title = row.aiTitle;
+    if (row?.type !== "user" && row?.type !== "assistant" || row.isSidechain || row.isMeta)
+      continue;
+    const content = row.message?.content;
+    const parts = typeof content === "string" ? [content] : Array.isArray(content) ? content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text) : [];
+    for (const part of parts)
+      texts.push(part.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, " "));
+  }
+  if (customTitle) texts.title = customTitle;
+  return texts;
+}
+function issueKeys(texts) {
+  const keys = [];
+  for (let index = texts.length - 1; index >= 0; index--) {
+    const found = [...texts[index].matchAll(MENTION)].map((match) => `${match[1].toUpperCase()}-${match[2]}`);
+    for (let item = found.length - 1; item >= 0; item--) {
+      const key = found[item];
+      if (!keys.includes(key)) keys.push(key);
+      if (keys.length >= MAX_SESSION_KEYS) return keys;
+    }
+  }
+  return keys;
+}
+function isNamingTask(texts) {
+  return /^Name this chat from the user's first request/.test(texts[0] ?? "");
+}
+async function workspacePath(host, context) {
+  const workspaceId = context.workspaceId;
+  const branch = String(context.branch || "").replace(/^refs\/heads\//, "");
+  try {
+    const { workspaces } = await host.call("workspace.list");
+    const local = workspaces.filter((row) => row.path && (row.hostId === "local" || row.hostId === null));
+    const match = local.find((row) => row.id === workspaceId || workspaceId.endsWith(`::${row.path}`)) ?? local.filter(
+      (row) => row.name === context.displayName && String(row.branch || "").replace(/^refs\/heads\//, "") === branch
+    ).at(0);
+    if (match?.path) return match.path;
+  } catch {
+  }
+  const separator = workspaceId.indexOf("::");
+  return separator >= 0 ? workspaceId.slice(separator + 2) : "";
+}
+async function sessionKeys(host) {
+  const context = await host.call("workspace.readContext");
+  if (!context?.workspaceId) return { status: "no-workspace", keys: [] };
+  const path = await workspacePath(host, context);
+  if (!path) return { status: "no-workspace", keys: [] };
+  let agents = [];
+  try {
+    agents = (await host.call("agents.list")).agents ?? [];
+  } catch {
+  }
+  const titles = new Map(
+    agents.filter((agent) => agent.sessionId).map((agent) => [String(agent.sessionId), agent.title || ""])
+  );
+  const files = [];
+  for (const root of await claudeProjectRoots()) {
+    const dir = join(root, transcriptDirName(path));
+    let names;
+    try {
+      names = await readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".jsonl")) continue;
+      const file = join(dir, name);
+      try {
+        const info = await stat(file);
+        if (info.isFile()) files.push({ file, id: basename(name, ".jsonl"), mtime: info.mtimeMs });
+      } catch {
+      }
+    }
+  }
+  const live = files.filter((entry) => titles.has(entry.id));
+  const candidates = (live.length ? live : files).sort((a, b) => b.mtime - a.mtime);
+  for (const candidate of candidates.slice(0, 10)) {
+    let texts;
+    try {
+      texts = conversationTexts(await readTranscript(candidate.file));
+    } catch {
+      continue;
+    }
+    if (!texts.length || isNamingTask(texts)) continue;
+    const keys = issueKeys(texts);
+    const title = titles.get(candidate.id) || texts.title || "";
+    return { status: keys.length ? "ok" : "no-keys", keys, title: title.slice(0, 200) };
+  }
+  return { status: "no-chat", keys: [] };
+}
+
 // plugins/jira-tasks/src/open-panel.ts
 function parseOpenResponse(stdout, executionError = null) {
   if (executionError && (executionError.killed || executionError.signal || typeof executionError.code !== "number" || ![1, 2, 3].includes(executionError.code)))
@@ -466,9 +678,23 @@ function activate(orca) {
     "jira.connection",
     (_input, { signal }) => jira.connection(signal)
   );
+  orca.panels.handle("jira.list", async (input, { signal }) => {
+    if (input?.filter !== "session") return jira.list(input, signal);
+    siteId(input.siteId);
+    const session = await sessionKeys(orca.host);
+    const result = await jira.byKeys({ siteId: input.siteId, keys: session.keys }, signal);
+    return {
+      ...result,
+      session: {
+        status: session.status === "ok" && !result.tasks.length ? "no-keys" : session.status,
+        title: session.title ?? "",
+        mentioned: session.keys.length
+      }
+    };
+  });
   orca.panels.handle(
-    "jira.list",
-    (input, { signal }) => jira.list(input, signal)
+    "jira.searchAll",
+    (input, { signal }) => jira.searchAll(input, signal)
   );
   orca.panels.handle(
     "jira.children",

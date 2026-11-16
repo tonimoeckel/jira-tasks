@@ -35,7 +35,10 @@
       }
     ]
   },
-  "capabilities": [],
+  "capabilities": [
+    { "kind": "workspace:read" },
+    { "kind": "agent:read" }
+  ],
   "license": "MIT",
   "repository": "https://github.com/tienne/orca-plugins/tree/main/plugins/jira-tasks",
   "author": {

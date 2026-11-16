@@ -721,3 +721,16 @@ html.dark {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.search-all-button {
+  display: block;
+  margin: -20px auto 12px;
+}
+.global-search-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
