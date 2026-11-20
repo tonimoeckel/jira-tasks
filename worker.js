@@ -282,10 +282,42 @@ var runCli = (args, signal) => new Promise((resolve, reject) => {
     }
   );
 });
+var PROJECT_KEY = /^[A-Z][A-Z0-9_]{0,19}$/;
+var PROJECT_TTL_MS = 30 * 60 * 1e3;
+var PROJECT_RETRY_MS = 60 * 1e3;
 function createJiraClient(run = runCli, optionsBudgetMs = 15e3) {
   if (!Number.isInteger(optionsBudgetMs) || optionsBudgetMs < 1 || optionsBudgetMs > 15e3)
     throw new Error("Invalid Jira options timeout.");
+  const projects = /* @__PURE__ */ new Map();
   return {
+    // Project keys of the site, used to tell issue keys from look-alikes such
+    // as "utf-8" or "sha-256". Cached per site; a failed load caches null for a
+    // short while, so callers fall back to unfiltered keys.
+    async projectKeys(input, signal) {
+      siteId(input?.siteId);
+      const cached = projects.get(input.siteId);
+      if (cached && cached.expires > Date.now()) return cached.keys;
+      const entry = { expires: Date.now() + PROJECT_RETRY_MS, keys: null };
+      entry.keys = (async () => {
+        let found = null;
+        try {
+          const rows = await run(["project", "list", "--site", input.siteId], void 0);
+          if (Array.isArray(rows)) {
+            found = new Set(
+              rows.map((row) => text(optional(row).key, 100).toUpperCase()).filter((key) => PROJECT_KEY.test(key))
+            );
+            if (!found.size) found = null;
+          }
+        } catch {
+        }
+        entry.expires = Date.now() + (found ? PROJECT_TTL_MS : PROJECT_RETRY_MS);
+        return found;
+      })();
+      projects.set(input.siteId, entry);
+      const result = await entry.keys;
+      signal?.throwIfAborted();
+      return result;
+    },
     async connection(signal) {
       const result = record(await run(["connection"], signal));
       const sites = Array.isArray(result.sites) ? result.sites.map((value) => {
@@ -566,10 +598,10 @@ function conversationTexts(transcript) {
   if (customTitle) texts.title = customTitle;
   return texts;
 }
-function issueKeys(texts) {
+function issueKeys(texts, projects = null) {
   const keys = [];
   for (let index = texts.length - 1; index >= 0; index--) {
-    const found = [...texts[index].matchAll(MENTION)].map((match) => `${match[1].toUpperCase()}-${match[2]}`);
+    const found = [...texts[index].matchAll(MENTION)].filter((match) => !projects || projects.has(match[1].toUpperCase())).map((match) => `${match[1].toUpperCase()}-${match[2]}`);
     for (let item = found.length - 1; item >= 0; item--) {
       const key = found[item];
       if (!keys.includes(key)) keys.push(key);
@@ -596,7 +628,7 @@ async function workspacePath(host, context) {
   const separator = workspaceId.indexOf("::");
   return separator >= 0 ? workspaceId.slice(separator + 2) : "";
 }
-async function sessionKeys(host) {
+async function sessionKeys(host, projects = null) {
   const context = await host.call("workspace.readContext");
   if (!context?.workspaceId) return { status: "no-workspace", keys: [] };
   const path = await workspacePath(host, context);
@@ -638,7 +670,7 @@ async function sessionKeys(host) {
       continue;
     }
     if (!texts.length || isNamingTask(texts)) continue;
-    const keys = issueKeys(texts);
+    const keys = issueKeys(texts, projects);
     const title = titles.get(candidate.id) || texts.title || "";
     return { status: keys.length ? "ok" : "no-keys", keys, title: title.slice(0, 200) };
   }
@@ -716,7 +748,8 @@ function activate(orca) {
   orca.panels.handle("jira.list", async (input, { signal }) => {
     if (input?.filter !== "session") return jira.list(input, signal);
     siteId(input.siteId);
-    const session = await sessionKeys(orca.host);
+    const projects = await jira.projectKeys({ siteId: input.siteId }, signal);
+    const session = await sessionKeys(orca.host, projects);
     const result = await jira.byKeys({ siteId: input.siteId, keys: session.keys }, signal);
     return {
       ...result,
